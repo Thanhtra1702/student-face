@@ -194,15 +194,6 @@ Display Results
 | **Confidence Ratio** | +8-12% | Phân biệt tốt hơn so với chỉ dùng Gap |
 | **Quality Check** | +3-5% | Loại bỏ ảnh kém chất lượng |
 
-### 5.2. So Sánh Với Các Phương Pháp Khác
-
-| Phương pháp | Accuracy | Speed | Complexity |
-|-------------|----------|-------|------------|
-| **Hệ thống hiện tại** | **85-92%** | **3s** | Cao |
-| ArcFace + OpenCV | 68% | 2.5s | Trung bình |
-| FaceNet512 + OpenCV | 60% | 2s | Trung bình |
-| VGG-Face + Haar | 45% | 1.5s | Thấp |
-
 ---
 
 ## 6. HƯỚNG DẪN SỬ DỤNG
@@ -293,35 +284,11 @@ student_face/
 - 3s/người có thể chậm giờ cao điểm
 - **Giải pháp:** Giảm frame averaging 3→2
 
-### 7.2. Roadmap Phát Triển
-
-**Q1 2026:** ✅ Hoàn thành MVP với Mediapipe + Multi-frame
-
-**Q2 2026:**
-
-- [ ] Làm sạch database
-- [ ] Fine-tune thresholds
-- [ ] GPU acceleration
-
-**Q3 2026:**
-
-- [ ] Điểm danh tự động
-- [ ] Dashboard thống kê
-- [ ] Mobile app
-
-**Q4 2026:**
-
-- [ ] Docker containerization
-- [ ] RESTful API
-- [ ] Cloud deployment
-
 ### 7.3. Tính Năng Tương Lai
 
-✨ **Điểm danh tự động** - Lưu log nhận diện  
 ✨ **Thống kê** - Dashboard số lượt tra cứu  
 ✨ **Multi-language** - Hỗ trợ tiếng Anh  
 ✨ **Voice feedback** - Đọc tên bằng giọng nói  
-✨ **API** - Tích hợp mobile app  
 
 ---
 
@@ -337,14 +304,4 @@ student_face/
 
 ---
 
-## 👥 THÔNG TIN
-
-**Developer:** Thanhtra1702  
-**Email:** <thanhtra1702@gmail.com>  
-**GitHub:** <https://github.com/Thanhtra1702>  
-**Repository:** <https://github.com/Thanhtra1702/Face-Recognition.git>
-
----
-
 **Ngày cập nhật:** 31/01/2026  
-**Phiên bản:** 2.0 (Enterprise Edition)
