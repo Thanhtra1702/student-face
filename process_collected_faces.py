@@ -126,39 +126,41 @@ def process_collected_images():
             y2 = min(img_height, y + h + y_pad)
             
             face_crop = img[y1:y2, x1:x2]
-            cv2.imwrite(target_path, face_crop)
-            print(f"✅ Đã crop và cập nhật database: {target_path}")
+            
+            # --- LOGIC CHỌN ẢNH TỐT NHẤT (SMART AVATAR SELECTION) ---
+            should_save_image = True
+            if os.path.exists(target_path):
+                # Nếu ảnh đã tồn tại, so sánh chất lượng (Dựa trên độ phân giải)
+                try:
+                    old_img = cv2.imread(target_path)
+                    if old_img is not None:
+                        old_h, old_w = old_img.shape[:2]
+                        new_h, new_w = face_crop.shape[:2]
+                        
+                        old_area = old_w * old_h
+                        new_area = new_w * new_h
+                        
+                        # Chỉ thay thế nếu ảnh mới LỚN HƠN ảnh cũ (Rõ nét hơn)
+                        if new_area <= old_area:
+                            should_save_image = False
+                            print(f"ℹ️ Giữ nguyên Avatar cũ (Mới: {new_w}x{new_h} <= Cũ: {old_w}x{old_h})")
+                        else:
+                            print(f"🆙 Cập nhật Avatar chất lượng cao hơn ({old_w}x{old_h} -> {new_w}x{new_h})")
+                except:
+                    pass # Lỗi đọc ảnh cũ -> Cứ ghi đè cho chắc
 
-            # 2. Update Qdrant
+            if should_save_image:
+                cv2.imwrite(target_path, face_crop)
+                print(f"✅ Đã lưu Avatar mới: {target_path}")
+            # --------------------------------------------------------
+
+            # 2. Update Qdrant (Cơ chế Multi-Vector: Luôn tạo điểm mới)
             embedding = best_face['embedding']
             
-            # Tìm ID hiện tại trong Qdrant
-            try:
-                scroll_result = client.scroll(
-                    collection_name=COLLECTION_NAME,
-                    scroll_filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="student_id",
-                                match=models.MatchValue(value=mssv)
-                            )
-                        ]
-                    ),
-                    limit=1
-                )[0]
-                
-                if scroll_result:
-                    point_id = scroll_result[0].id
-                    print(f"🔄 Đang cập nhật vector Qdrant (ID: {point_id})...")
-                else:
-                    import uuid
-                    point_id = str(uuid.uuid4())
-                    print(f"➕ Tạo vector mới Qdrant (ID: {point_id})...")
-            except Exception as e:
-                print(f"⚠️ Lỗi truy vấn Qdrant: {e}")
-                # Fallback tạo mới nếu lỗi scroll
-                import uuid
-                point_id = str(uuid.uuid4())
+            # Tạo ID ngẫu nhiên cho Vector mới (Không ghi đè Vector cũ)
+            import uuid
+            point_id = str(uuid.uuid4())
+            print(f"➕ Thêm dữ liệu học mới cho {mssv} (Point ID: {point_id})...")
 
             client.upsert(
                 collection_name=COLLECTION_NAME,
@@ -170,7 +172,7 @@ def process_collected_images():
                     )
                 ]
             )
-            print("✅ Đã cập nhật Qdrant.")
+            print("✅ Đã nạp thêm vào Qdrant.")
 
             # 3. Di chuyển ảnh gốc sang processed/MSSV/
             processed_student_dir = os.path.join(PROCESSED_DIR, mssv)
