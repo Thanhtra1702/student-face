@@ -42,7 +42,8 @@ state = KioskState()
 def signal_handler(sig, frame):
     print('👋 Đang tắt hệ thống...')
     state.running = False
-    sys.exit(0)
+    time.sleep(0.5)  # Cho camera thread kịp dừng
+    os._exit(0)  # Force exit để không bị treo
 
 signal.signal(signal.SIGINT, signal_handler)
 
