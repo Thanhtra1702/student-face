@@ -48,14 +48,15 @@ def process_collected_images():
     
     for file_path in image_files:
         filename = os.path.basename(file_path)
+        parent_dir_name = os.path.basename(os.path.dirname(file_path))
         
-        # Parse MSSV từ tên file (Format: MSSV_Timestamp.jpg)
-        try:
-            mssv = filename.split('_')[0]
-        except:
-            print(f"⚠️ Tên file không đúng định dạng: {filename}")
+        # LOGIC CHUẨN: Chỉ nhận ảnh trong Folder con (collected_faces/MSSV/...)
+        if parent_dir_name == "collected_faces" or parent_dir_name == "processed":
+            print(f"⚠️ Bỏ qua ảnh không nằm trong thư mục MSSV: {filename}")
             continue
-
+            
+        mssv = parent_dir_name
+        
         print(f"\n📸 Đang xử lý: {filename} (MSSV: {mssv})")
         
         # 1. Đọc và Crop ảnh
@@ -174,17 +175,19 @@ def process_collected_images():
             )
             print("✅ Đã nạp thêm vào Qdrant.")
 
-            # 3. Di chuyển ảnh gốc sang processed/MSSV/
-            processed_student_dir = os.path.join(PROCESSED_DIR, mssv)
-            if not os.path.exists(processed_student_dir):
-                os.makedirs(processed_student_dir)
+            # 3. Dọn dẹp: Xóa ảnh gốc sau khi đã xử lý xong (Tiết kiệm bộ nhớ)
+            try:
+                os.remove(file_path)
+                print(f"🗑️ Đã xóa file gốc: {filename}")
+            except Exception as e:
+                print(f"⚠️ Không thể xóa file {filename}: {e}")
             
-            shutil.move(file_path, os.path.join(processed_student_dir, filename))
-            
-            # Xóa thư mục rỗng trong collected_faces nếu cần (optional)
+            # Xóa thư mục rỗng trong collected_faces nếu cần
             parent_dir = os.path.dirname(file_path)
             if not os.listdir(parent_dir) and parent_dir != COLLECTED_DIR:
-                os.rmdir(parent_dir)
+                try:
+                    os.rmdir(parent_dir)
+                except: pass
                 
             count_success += 1
 

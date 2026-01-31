@@ -18,8 +18,13 @@ function checkStatus() {
             if (data.status === 'CONFIRM' && data.data) {
                 showResult(data.data);
                 isProcessing = true;
+            } else if (data.status === 'LIVENESS') {
+                // Chế độ Ngầm: Vẫn hiện "Đang quét" để người dùng không biết mình đang bị check
+                showIdle();
             } else if (data.status === 'PROCESSING') {
                 showProcessing(data.progress);
+            } else if (data.status === 'SPOOF') {
+                showSpoof();
             } else {
                 showIdle();
             }
@@ -30,13 +35,49 @@ function checkStatus() {
 // Poll every 300ms
 const poller = setInterval(checkStatus, 300);
 
+function showSpoof() {
+    document.getElementById('info-idle').classList.remove('hidden');
+    document.getElementById('info-result').classList.add('hidden');
+
+    // Hiệu ứng Cảnh báo (Đỏ)
+    const oval = document.querySelector('.oval-overlay');
+    oval.classList.remove('processing', 'success');
+    oval.style.borderColor = "#FF0000";
+    oval.style.boxShadow = "0 0 30px rgba(255, 0, 0, 0.8)";
+
+    // Status Text
+    const statusEl = document.getElementById('scan-status');
+    statusEl.innerHTML = '<span class="iconify" data-icon="mdi:alert-circle"></span> GIẢ MẠO!';
+    statusEl.style.background = "#FF0000";
+}
+
+function showLiveness() {
+    document.getElementById('info-idle').classList.remove('hidden');
+    document.getElementById('info-result').classList.add('hidden');
+
+    // Hiệu ứng Chờ chớp mắt (Xanh dương)
+    const oval = document.querySelector('.oval-overlay');
+    oval.classList.remove('processing', 'success');
+    oval.style.borderColor = "#00407A"; // FPT Blue
+    oval.style.boxShadow = "0 0 20px rgba(0, 64, 122, 0.5)";
+
+    // Status Text
+    const statusEl = document.getElementById('scan-status');
+    statusEl.innerHTML = '<span class="iconify" data-icon="mdi:eye-outline"></span> CHỚP MẮT ĐỂ XÁC THỰC';
+    statusEl.style.background = "#00407A";
+}
+
 function showProcessing(progress) {
     // Ẩn bảng kết quả, hiện bảng Idle (nhưng đổi text status)
     document.getElementById('info-idle').classList.remove('hidden');
     document.getElementById('info-result').classList.add('hidden');
 
-    // Hiệu ứng Loading (Xoay vòng)
+    // Reset style đè của Spoof
     const oval = document.querySelector('.oval-overlay');
+    oval.style.borderColor = "";
+    oval.style.boxShadow = "";
+
+    // Hiệu ứng Loading (Xoay vòng)
     oval.classList.add('processing');
     oval.classList.remove('success');
 
