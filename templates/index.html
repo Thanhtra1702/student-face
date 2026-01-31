@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FPT AI Kiosk</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://code.iconify.design/2/2.2.1/iconify.min.js"></script>
+</head>
+<body>
+    <div class="header">
+        <img src="/static/images/logo.png" alt="FPT Logo" class="logo">
+        <div class="header-text">
+            <h1>HỆ THỐNG ĐIỂM DANH THÔNG MINH</h1>
+        </div>
+        <div class="clock" id="clock">00:00 - 01/01/2026</div>
+    </div>
+
+    <div class="main-container">
+        <!-- LEFT: CAMERA -->
+        <div class="camera-section">
+            <div class="camera-frame">
+                <img src="/video_feed" alt="Camera Live Feed" id="video-stream">
+                
+                <!-- Overlay Oval -->
+                <div class="oval-overlay"></div>
+                
+                <!-- Status Badge -->
+                <div class="scan-status" id="scan-status">
+                    <span class="dot blinking"></span> Đang quét...
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: INFO PANEL -->
+        <div class="info-section">
+            <!-- Trạng thái chờ -->
+            <div id="info-idle" class="info-card">
+                <div class="icon-placeholder">
+                    <span class="iconify" data-icon="mdi:face-recognition" data-width="120"></span>
+                </div>
+                <h2>Mời bạn nhìn vào Camera</h2>
+                <p>Vui lòng tháo khẩu trang và kính râm</p>
+            </div>
+
+            <!-- Trạng thái Có kết quả -->
+            <div id="info-result" class="info-card hidden">
+                <div class="avatar-circle">HV</div>
+                <h2 id="st-name">Nguyễn Văn A</h2>
+                <div class="student-id" id="st-id">MSSV: QE170000</div>
+                
+                <div class="info-details">
+                    <div class="detail-item">
+                        <span class="label">Lịch học hôm nay:</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="iconify" data-icon="mdi:book-open-page-variant"></span>
+                        <span id="st-schedule">SEG301 (12:30-14:45)</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="iconify" data-icon="mdi:door-open"></span>
+                        <span id="st-room">Phòng 304</span>
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button class="btn btn-confirm" onclick="handleAction('confirm')">XÁC NHẬN</button>
+                    <button class="btn btn-reject" onclick="handleAction('reject')">THỬ LẠI</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/script.js"></script>
+</body>
+</html>
