@@ -14,9 +14,8 @@
 3. [Công Nghệ Sử Dụng](#3-công-nghệ-sử-dụng)
 4. [Quy Trình Nhận Diện](#4-quy-trình-nhận-diện)
 5. [Tối Ưu Hóa](#5-tối-ưu-hóa)
-6. [Kết Quả](#6-kết-quả)
-7. [Hướng Dẫn Sử Dụng](#7-hướng-dẫn-sử-dụng)
-8. [Hạn Chế và Phát Triển](#8-hạn-chế-và-phát-triển)
+6. [Hướng Dẫn Sử Dụng](#6-hướng-dẫn-sử-dụng)
+7. [Hạn Chế và Phát Triển](#7-hạn-chế-và-phát-triển)
 
 ---
 
@@ -33,7 +32,6 @@ Xây dựng hệ thống Kiosk tự động nhận diện khuôn mặt sinh viê
 ### 1.2. Thông Số Hệ Thống
 
 - **Quy mô:** 1,604 sinh viên
-- **Độ chính xác:** 85-92%
 - **Thời gian nhận diện:** ~3 giây/người
 - **Môi trường:** Kiosk tại các điểm công cộng
 
@@ -207,49 +205,9 @@ Display Results
 
 ---
 
-## 6. KẾT QUẢ
+## 6. HƯỚNG DẪN SỬ DỤNG
 
-### 6.1. Test Dataset
-
-- **Nguồn:** Thư mục `flipped_faces/`
-- **Số lượng:** 16 ảnh sinh viên
-- **Điều kiện:** Ảnh camera thực tế (không phải ảnh thẻ)
-
-### 6.2. Kết Quả Trước Tối Ưu
-
-| Metric | Giá trị |
-|--------|---------|
-| Accuracy | 68.75% (11/16) |
-| Wrong ID | 12.50% (2/16) |
-| Rejected | 18.75% (3/16) |
-| Avg Score | 0.45-0.55 |
-
-**Vấn đề:** Nhiễu database, Gap nhỏ, căn chỉnh kém
-
-### 6.3. Kết Quả Sau Tối Ưu
-
-| Metric | Giá trị | Cải thiện |
-|--------|---------|-----------|
-| **Accuracy** | **85-92%** | **+20%** |
-| **Avg Score** | 0.53-0.63 | **+0.10** |
-| **False Positive** | <5% | **-7.5%** |
-| **Rejection Rate** | ~10% | **-8.75%** |
-
-### 6.4. Performance Metrics
-
-| Metric | Giá trị |
-|--------|---------|
-| Inference Time | ~3 giây/người |
-| FPS | 30 FPS |
-| Memory Usage | ~2GB RAM |
-| CPU Usage | 40-60% |
-| Model Size | ~500MB |
-
----
-
-## 7. HƯỚNG DẪN SỬ DỤNG
-
-### 7.1. Yêu Cầu Hệ Thống
+### 6.1. Yêu Cầu Hệ Thống
 
 - **OS:** Windows 10/11, macOS, Linux
 - **Python:** 3.10+
@@ -311,9 +269,9 @@ student_face/
 
 ---
 
-## 8. HẠN CHẾ VÀ PHÁT TRIỂN
+## 7. HẠN CHẾ VÀ PHÁT TRIỂN
 
-### 8.1. Hạn Chế Hiện Tại
+### 7.1. Hạn Chế Hiện Tại
 
 **1. Nhiễu Database**
 
@@ -335,7 +293,7 @@ student_face/
 - 3s/người có thể chậm giờ cao điểm
 - **Giải pháp:** Giảm frame averaging 3→2
 
-### 8.2. Roadmap Phát Triển
+### 7.2. Roadmap Phát Triển
 
 **Q1 2026:** ✅ Hoàn thành MVP với Mediapipe + Multi-frame
 
@@ -357,7 +315,7 @@ student_face/
 - [ ] RESTful API
 - [ ] Cloud deployment
 
-### 8.3. Tính Năng Tương Lai
+### 7.3. Tính Năng Tương Lai
 
 ✨ **Điểm danh tự động** - Lưu log nhận diện  
 ✨ **Thống kê** - Dashboard số lượt tra cứu  
