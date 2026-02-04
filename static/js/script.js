@@ -1,136 +1,121 @@
-// Update Clock
-setInterval(() => {
+const appState = {
+    status: "SCANNING",
+    pollingInterval: null
+};
+
+// DOM Map
+const ui = {
+    cameraSection: document.querySelector('.camera-section'),
+    viewScanning: document.getElementById('view-scanning'),
+    viewSuccess: document.getElementById('view-success'),
+
+    // Result Fields
+    stName: document.getElementById('st-name'),
+    stId: document.getElementById('st-id'),
+    stClass: document.getElementById('st-class'),
+    stTime: document.getElementById('st-time'),
+
+    // Buttons
+    btnConfirm: document.getElementById('btn-confirm'),
+    btnRetry: document.getElementById('btn-retry'),
+
+    // Clock
+    clock: document.getElementById('clock'),
+    date: document.getElementById('date')
+};
+
+// 1. Clock Logic (HH:mm:ss)
+function updateClock() {
     const now = new Date();
-    const time = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-    const date = now.toLocaleDateString('vi-VN');
-    document.getElementById('clock').innerText = `${time} - ${date}`;
-}, 1000);
+    ui.clock.innerText = now.toLocaleTimeString('vi-VN', { hour12: false });
+    const days = ['CHỦ NHẬT', 'THỨ HAI', 'THỨ BA', 'THỨ TƯ', 'THỨ NĂM', 'THỨ SÁU', 'THỨ BẢY'];
+    const d = now.getDate().toString().padStart(2, '0');
+    const m = (now.getMonth() + 1).toString().padStart(2, '0');
+    ui.date.innerText = `${days[now.getDay()]}, ${d}/${m}/${now.getFullYear()}`;
+}
+setInterval(updateClock, 1000);
+updateClock();
 
-// Polling Status from Server
-let isProcessing = false;
+// 2. View Switcher
+function switchView(viewName) {
+    ui.viewScanning.classList.add('hidden');
+    ui.viewSuccess.classList.add('hidden');
 
-function checkStatus() {
-    if (isProcessing) return;
-
-    fetch('/api/status')
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'CONFIRM' && data.data) {
-                showResult(data.data);
-                isProcessing = true;
-            } else if (data.status === 'LIVENESS') {
-                // Chế độ Ngầm: Vẫn hiện "Đang quét" để người dùng không biết mình đang bị check
-                showIdle();
-            } else if (data.status === 'PROCESSING') {
-                showProcessing(data.progress);
-            } else if (data.status === 'SPOOF') {
-                showSpoof();
-            } else {
-                showIdle();
-            }
-        })
-        .catch(err => console.error(err));
+    if (viewName === 'SCANNING') ui.viewScanning.classList.remove('hidden');
+    if (viewName === 'SUCCESS') ui.viewSuccess.classList.remove('hidden');
 }
 
-// Poll every 300ms
-const poller = setInterval(checkStatus, 300);
-
-function showSpoof() {
-    document.getElementById('info-idle').classList.remove('hidden');
-    document.getElementById('info-result').classList.add('hidden');
-
-    // Hiệu ứng Cảnh báo (Đỏ)
-    const oval = document.querySelector('.oval-overlay');
-    oval.classList.remove('processing', 'success');
-    oval.style.borderColor = "#FF0000";
-    oval.style.boxShadow = "0 0 30px rgba(255, 0, 0, 0.8)";
-
-    // Status Text
-    const statusEl = document.getElementById('scan-status');
-    statusEl.innerHTML = '<span class="iconify" data-icon="mdi:alert-circle"></span> GIẢ MẠO!';
-    statusEl.style.background = "#FF0000";
-}
-
-function showLiveness() {
-    document.getElementById('info-idle').classList.remove('hidden');
-    document.getElementById('info-result').classList.add('hidden');
-
-    // Hiệu ứng Chờ chớp mắt (Xanh dương)
-    const oval = document.querySelector('.oval-overlay');
-    oval.classList.remove('processing', 'success');
-    oval.style.borderColor = "#00407A"; // FPT Blue
-    oval.style.boxShadow = "0 0 20px rgba(0, 64, 122, 0.5)";
-
-    // Status Text
-    const statusEl = document.getElementById('scan-status');
-    statusEl.innerHTML = '<span class="iconify" data-icon="mdi:eye-outline"></span> CHỚP MẮT ĐỂ XÁC THỰC';
-    statusEl.style.background = "#00407A";
-}
-
-function showProcessing(progress) {
-    // Ẩn bảng kết quả, hiện bảng Idle (nhưng đổi text status)
-    document.getElementById('info-idle').classList.remove('hidden');
-    document.getElementById('info-result').classList.add('hidden');
-
-    // Reset style đè của Spoof
-    const oval = document.querySelector('.oval-overlay');
-    oval.style.borderColor = "";
-    oval.style.boxShadow = "";
-
-    // Hiệu ứng Loading (Xoay vòng)
-    oval.classList.add('processing');
-    oval.classList.remove('success');
-
-    // Cập nhật Status Bar
-    const statusEl = document.getElementById('scan-status');
-    statusEl.innerHTML = `<span class="iconify spinning" data-icon="mdi:loading"></span> Đang xử lý... ${Math.round(progress)}%`;
-    statusEl.style.background = "#F26F21";
-}
-
-function showResult(student) {
-    document.getElementById('info-idle').classList.add('hidden');
-    document.getElementById('info-result').classList.remove('hidden');
-
-    document.getElementById('st-name').innerText = student.name;
-    document.getElementById('st-id').innerText = `MSSV: ${student.student_id}`;
-    document.getElementById('st-schedule').innerText = student.schedule;
-    document.getElementById('st-room').innerText = student.room;
-
-    // Hiệu ứng Thành công (Xanh lá)
-    const oval = document.querySelector('.oval-overlay');
-    oval.classList.remove('processing');
-    oval.classList.add('success');
-
-    const statusEl = document.getElementById('scan-status');
-    statusEl.innerHTML = '<span class="iconify" data-icon="mdi:check-circle"></span> Đã nhận diện!';
-    statusEl.style.background = "#2ECC71";
-}
-
-function showIdle() {
-    document.getElementById('info-idle').classList.remove('hidden');
-    document.getElementById('info-result').classList.add('hidden');
-
-    // Reset Trạng thái
-    const oval = document.querySelector('.oval-overlay');
-    oval.classList.remove('processing', 'success');
-
-    const statusEl = document.getElementById('scan-status');
-    statusEl.innerHTML = '<span class="dot blinking"></span> Đang quét...';
-    statusEl.style.background = "rgba(0,0,0,0.8)";
-}
-
-// Handle Buttons
-function handleAction(action) {
-    fetch('/api/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: action })
-    })
-        .then(res => res.json())
-        .then(data => {
-            if (data.success) {
-                isProcessing = false; // Resume polling
-                showIdle();
-            }
+// 3. Actions
+// Nút Xác Nhận: Gửi API confirm -> Reset UI
+ui.btnConfirm.addEventListener('click', async () => {
+    try {
+        await fetch('/api/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'confirm' })
         });
+        resetToScanning();
+    } catch (e) { console.error("Confirm error:", e); }
+});
+
+// Nút Thử Lại: Thông báo server reset và Reset UI
+ui.btnRetry.addEventListener('click', async () => {
+    try {
+        await fetch('/api/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'retry' }) // Gửi lệnh reset lên Server
+        });
+        resetToScanning();
+    } catch (e) { console.error("Retry error:", e); }
+});
+
+function resetToScanning() {
+    appState.status = "SCANNING";
+    switchView('SCANNING');
+    // Clear old data visual
+    ui.stName.innerText = "--";
 }
+
+// 4. Polling Logic
+function startPolling() {
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            updateUI(data);
+        } catch (e) { console.error("Polling error:", e); }
+    }, 200);
+}
+
+function updateUI(data) {
+    const { status, data: studentData } = data;
+
+    // Lock UI if in Confirm state (Success view is visible)
+    if (appState.status === "CONFIRM" && status !== "CONFIRM") return;
+    if (appState.status === status && status !== "SCANNING") return;
+
+    appState.status = status;
+
+    if (status === "SCANNING") {
+        switchView('SCANNING');
+    }
+    else if (status === "CONFIRM") {
+        if (studentData) {
+            ui.stName.innerText = (studentData.name || "NGƯỜI LẠ").toUpperCase();
+            ui.stId.innerText = studentData.student_id || "N/A";
+
+            // Map thêm thông tin Phòng/Lớp
+            const schedule = studentData.schedule || "N/A";
+            const room = studentData.room || "";
+            ui.stClass.innerText = room ? `${schedule} - ${room}` : schedule;
+
+            ui.stTime.innerText = studentData.checkin_time || "--";
+
+            switchView('SUCCESS');
+        }
+    }
+}
+
+startPolling();
+console.log("Kiosk Advanced UI v2.5 Initialized");

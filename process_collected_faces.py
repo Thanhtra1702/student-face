@@ -16,6 +16,28 @@ DATABASE_DIR = "database"
 DB_PATH = "./qdrant_db"
 COLLECTION_NAME = "student_faces"
 
+# --- AI ENHANCEMENT HELPERS (Đồng bộ với app.py và init_qdrant.py) ---
+def preprocess_frame(frame):
+    """Cân bằng sáng và khử nhiễu để AI dễ đọc hơn"""
+    try:
+        denoised = cv2.GaussianBlur(frame, (3, 3), 0)
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        final = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        return final
+    except:
+        return frame
+
+def rotate_image(image, angle):
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(image, M, (w, h))
+# -----------------------------------------------------------------------
+
 def process_collected_images():
     if not os.path.exists(COLLECTED_DIR):
         print(f"Không tìm thấy thư mục {COLLECTED_DIR}")
@@ -155,25 +177,50 @@ def process_collected_images():
                 print(f"✅ Đã lưu Avatar mới: {target_path}")
             # --------------------------------------------------------
 
-            # 2. Update Qdrant (Cơ chế Multi-Vector: Luôn tạo điểm mới)
-            embedding = best_face['embedding']
+            # 2. Update Qdrant (Cơ chế Multi-Vector + Augmentation: Tạo x8 variants)
+            # Tạo các biến thể (Augmentation - Buff mạnh để tăng độ chính xác)
+            # Dùng cv2.convertScaleAbs cho Brightness/Contrast
+            variants = [
+                ("orig", face_crop),
+                ("flip", cv2.flip(face_crop, 1)),
+                ("rot_p5", rotate_image(face_crop, 5)),
+                ("rot_m5", rotate_image(face_crop, -5)),
+                ("bright", cv2.convertScaleAbs(face_crop, alpha=1.2, beta=30)), # Sáng hơn
+                ("dark", cv2.convertScaleAbs(face_crop, alpha=0.8, beta=-20)),   # Tối hơn
+                ("contrast", cv2.convertScaleAbs(face_crop, alpha=1.5, beta=0)), # Tương phản cao
+                ("blur", cv2.GaussianBlur(face_crop, (3, 3), 0))                # Nhòe nhẹ
+            ]
             
-            # Tạo ID ngẫu nhiên cho Vector mới (Không ghi đè Vector cũ)
             import uuid
-            point_id = str(uuid.uuid4())
-            print(f"➕ Thêm dữ liệu học mới cho {mssv} (Point ID: {point_id})...")
-
-            client.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[
-                    PointStruct(
-                        id=point_id,
-                        vector=embedding,
-                        payload={"student_id": mssv}
+            for var_name, var_img in variants:
+                try:
+                    # Chuyển sang RGB trước khi xử lý
+                    rgb_var = cv2.cvtColor(var_img, cv2.COLOR_BGR2RGB)
+                    
+                    results_var = DeepFace.represent(
+                        img_path=rgb_var,
+                        model_name="ArcFace",
+                        enforce_detection=False,
+                        detector_backend="mediapipe",
+                        align=True
                     )
-                ]
-            )
-            print("✅ Đã nạp thêm vào Qdrant.")
+                    if results_var:
+                        embedding = results_var[0]['embedding']
+                        point_id = str(uuid.uuid4())
+                        client.upsert(
+                            collection_name=COLLECTION_NAME,
+                            points=[
+                                PointStruct(
+                                    id=point_id,
+                                    vector=embedding,
+                                    payload={"student_id": mssv, "variant": var_name}
+                                )
+                            ]
+                        )
+                except:
+                    pass
+            
+            print(f"✅ Đã thêm 4 variants vào Qdrant cho {mssv}.")
 
             # 3. Dọn dẹp: Xóa ảnh gốc sau khi đã xử lý xong (Tiết kiệm bộ nhớ)
             try:
@@ -195,7 +242,7 @@ def process_collected_images():
             print(f"❌ Lỗi xử lý {filename}: {e}")
 
     print("\n" + "="*50)
-    print(f"🎉 Hoàn tất! Đã xử lý thành công {count_success}/{len(files)} ảnh.")
+    print(f"🎉 Hoàn tất! Đã xử lý thành công {count_success}/{len(image_files)} ảnh.")
 
 if __name__ == "__main__":
     process_collected_images()

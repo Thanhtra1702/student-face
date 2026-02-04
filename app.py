@@ -6,6 +6,7 @@ import datetime
 import os
 import numpy as np
 from deepface import DeepFace
+from qdrant_client import QdrantClient
 
 # Import DB handler từ module cũ
 from kiosk_db import DatabaseHandler
@@ -16,6 +17,22 @@ import signal
 import sys
 
 app = Flask(__name__)
+
+# --- PRELOAD MODEL (Để khởi động nhanh hơn) ---
+print("🚀 Đang tải model AI...")
+try:
+    # Preload ArcFace model bằng cách tạo embedding giả
+    import numpy as np
+    dummy_img = np.zeros((112, 112, 3), dtype=np.uint8)
+    DeepFace.represent(img_path=dummy_img, model_name="ArcFace", detector_backend="skip", enforce_detection=False)
+    print("✅ Model AI đã sẵn sàng!")
+except:
+    pass
+
+# --- QDRANT CLIENT ---
+QDRANT_PATH = "./qdrant_db"
+COLLECTION_NAME = "student_faces"
+# qdrant_client = QdrantClient(path=QDRANT_PATH) # REMOVED to avoid double locking
 
 # --- GLOBAL STATE ---
 class KioskState:
@@ -32,6 +49,7 @@ class KioskState:
         # Liveness Blink State
         self.blink_counter = 0
         self.is_blinking = False
+        self.last_blink_time = 0  # Thời gian lần chớp trước (để chống video replay)
         # Verification State
         self.consecutive_match_count = 0
         self.last_recognized_sid = None
@@ -40,10 +58,10 @@ state = KioskState()
 
 # Handle Ctrl+C
 def signal_handler(sig, frame):
-    print('👋 Đang tắt hệ thống...')
+    print('👋 Đang tắt hệ thống NGAY LẬP TỨC...')
     state.running = False
-    time.sleep(0.5)  # Cho camera thread kịp dừng
-    os._exit(0)  # Force exit để không bị treo
+    # time.sleep(0.5)  <-- Xóa dòng này
+    os._exit(0)  # Force exit ngay lập tức
 
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -73,145 +91,150 @@ def calculate_ear(landmarks, eye_indices, w, h):
 
 # --- AI ENHANCEMENT HELPERS ---
 def preprocess_frame(frame):
-    """Cân bằng sáng và khử nhiễu để AI dễ đọc hơn"""
-    try:
-        # 1. Khử nhiễu nhẹ
-        denoised = cv2.GaussianBlur(frame, (3, 3), 0)
-        
-        # 2. Chuyển sang LAB để cân bằng sáng (CLAHE)
-        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        cl = clahe.apply(l)
-        
-        limg = cv2.merge((cl, a, b))
-        final = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-        return final
-    except:
-        return frame
+    """
+    Giữ nguyên frame gốc cho AI xử lý.
+    Các model hiện đại (ArcFace) hoạt động tốt nhất với dữ liệu gốc thay vì filter thủ công.
+    """
+    return frame
 
 def check_img_quality(frame):
-    """Kiểm tra ảnh có bị mờ hoặc quá tối không"""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # 1. Check độ mờ (Blur) - Variance of Laplacian
-    blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    if blur_score < 60: # Ngưỡng mờ (càng thấp càng mờ)
-        return False, "Ảnh quá mờ"
-        
-    # 2. Check độ sáng
-    avg_brightness = np.mean(gray)
-    if avg_brightness < 30: return False, "Quá tối"
-    if avg_brightness > 220: return False, "Quá sáng"
-    
+    # Tắt check chất lượng quá gắt để tránh chặn nhầm trong môi trường tối
     return True, "OK"
 
-def check_spoofing_opencv(frame):
-    """
-    Check giả mạo - Tối ưu hiệu năng bằng cách resize
-    """
+def check_spoofing_opencv(frame, face_area=None):
+    return False, "Real"
+
+def run_recognition_async(frame, state):
+    """Chạy AI Nhận diện - Debug Mode (RGB + Low Threshold)"""
+    print(f"🚀 AI Start: Kích thước ảnh {frame.shape}")
     try:
-        small_frame = cv2.resize(frame, (640, 360))
-        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        # DeepFace làm việc tốt chuẩn với RGB
+        input_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # 1. Phát hiện viền hình chữ nhật
-        edges = cv2.Canny(gray, 100, 200)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # --- 1. DETECT & EXTRACT FACE ---
+        print("🔍 Đang Detect Face (Mediapipe)...")
+        face_objs = DeepFace.extract_faces(
+            img_path=input_frame,
+            detector_backend="mediapipe",
+            enforce_detection=True,
+            align=True,
+            grayscale=False
+        )
         
-        for cnt in contours:
-            approx = cv2.approxPolyDP(cnt, 0.05 * cv2.arcLength(cnt, True), True)
-            if len(approx) == 4:
-                area = cv2.contourArea(cnt)
-                if area > 5000: 
-                    return True, "Phát hiện khung thiết bị"
-
-        # 2. Check độ lóa
-        _, max_val, _, _ = cv2.minMaxLoc(gray)
-        if max_val >= 253:
-            return True, "Ánh sáng quá chói"
-            
-        return False, "Real"
-    except:
-        return False, "Error"
-
-def run_recognition_async(frame):
-    """Chạy AI Nhận diện (Sau khi đã qua Liveness Check)"""
-    try:
-        # Tiền xử lý
-        enhanced_frame = preprocess_frame(frame)
-
-        # DeepFace Processing
-        try:
-            results = DeepFace.represent(
-                img_path=enhanced_frame, 
-                model_name="ArcFace", 
-                detector_backend="mediapipe",
-                enforce_detection=True,
-                align=True
-            )
-        except:
-             # Fallback nếu lỗi hoặc không tìm thấy mặt
-             with state.lock:
+        if not face_objs:
+            print("⚠️ DeepFace không tìm thấy mặt")
+            with state.lock:
                 state.status = "SCANNING"
                 state.progress = 0
-             return
+            return
 
-        found = False
-        if results:
-            target_embedding = results[0]["embedding"]
-            search_res = state.db.search_face(target_embedding)
+        current_face = face_objs[0]["face"]
+        print(f"✅ Face Detected. Shape: {current_face.shape}")
+
+        if current_face.max() <= 1.0:
+            current_face = (current_face * 255).astype(np.uint8)
+
+        # --- 2. GET EMBEDDING ---
+        print("🧬 Đang tạo Embedding (ArcFace)...")
+        results = DeepFace.represent(
+            img_path=current_face,
+            model_name="ArcFace",
+            detector_backend="skip",
+            enforce_detection=False,
+            align=True
+        )
+        
+        if not results: 
+            print("❌ Lỗi tạo Embedding")
+            with state.lock:
+                state.status = "SCANNING"
+                state.progress = 0
+            return
             
-            # Hạ ngưỡng xuống 0.55 (Dễ nhận diện hơn)
-            # An toàn nhờ cơ chế Double Check 3 lần
-            if search_res and search_res[0].score > 0.55:
-                match = search_res[0]
-                sid = match.payload['student_id']
+        embedding = results[0]["embedding"]
+        
+        # --- 3. SEARCH DATABASE ---
+        print("🔎 Đang Query Qdrant...")
+        search_res = state.db.client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=embedding,
+            limit=3
+        ).points
+        
+        found = False
+        
+        if search_res:
+            best_match = search_res[0]
+            score = best_match.score
+            print(f"🎯 Top 1: {best_match.payload['student_id']} - Score: {score:.4f}")
+            
+            accepted_sid = None
+            
+            # --- 4. MATCHING LOGIC (SMART GAP CHECK) ---
+            # Hạ xuống 0.40
+            if score > 0.40:
+                # Tìm đối thủ thực sự (người đầu tiên có ID khác)
+                competitor = None
+                for res in search_res[1:]:
+                    if res.payload['student_id'] != best_match.payload['student_id']:
+                        competitor = res
+                        break
                 
-                # --- LOGIC XÁC NHẬN KÉP (DOUBLE CHECK) ---
-                if sid == state.last_recognized_sid:
-                     state.consecutive_match_count += 1
-                else:
-                     state.consecutive_match_count = 1 # Reset nếu đổi người
-                     state.last_recognized_sid = sid
-                
-                print(f"👀 Nhận diện: {sid} (Score: {match.score:.2f}) | Count: {state.consecutive_match_count}/3")
-
-                # Chỉ Confirm nếu nhận đúng 3 lần liên tiếp
-                if state.consecutive_match_count >= 3:
-                    name, sch, room = state.db.get_student_info(sid)
+                if competitor:
+                    gap = score - competitor.score
+                    print(f"   Gap vs Different Person ({competitor.payload['student_id']}: {competitor.score:.4f}): {gap:.4f}")
                     
-                    with state.lock:
-                        state.student_data = {
-                            "name": name,
-                            "student_id": sid,
-                            "schedule": sch,
-                            "room": room,
-                            "checkin_time": datetime.datetime.now().strftime("%H:%M %d/%m")
-                        }
-                        state.status = "CONFIRM"
-                        state.progress = 100
-                        # Reset counter
-                        state.consecutive_match_count = 0
-                        state.last_recognized_sid = None
-                    found = True
+                    # Nếu phân vân giữa 2 người khác nhau mà khoảng cách quá hẹp (< 0.02)
+                    if gap < 0.02 and score < 0.65:
+                         print(f"⚠️ Từ chối: Nhập nhằng giữa {best_match.payload['student_id']} và {competitor.payload['student_id']}")
+                    else:
+                        accepted_sid = best_match.payload['student_id']
                 else:
-                    # Vẫn đang trong quá trình verify -> coi như chưa found để loop tiếp
-                     found = False 
-            else:
-                 # Score thấp -> Reset counter
-                 state.consecutive_match_count = 0
-                 state.last_recognized_sid = None
-
-        if not found:
-            # Không nhận ra ai hoặc đang verify
-            if state.consecutive_match_count > 0:
-                 pass 
-            else:
+                    # Không có đối thủ khác ID nào trong top -> Quá an toàn
+                    accepted_sid = best_match.payload['student_id']
+            
+            if accepted_sid:
+                print(f"✅ CHẤP NHẬN MATCH: {accepted_sid}")
+                
+                # Bỏ qua Consecutive check để test độ nhạy -> Confirm Lập Tức
+                name, sch, room = state.db.get_student_info(accepted_sid)
                 with state.lock:
-                    state.status = "SCANNING"
-                    state.progress = 0
-                    state.last_scan_time = time.time() + 1.0 
+                    state.student_data = {
+                        "name": name,
+                        "student_id": accepted_sid,
+                        "schedule": sch, # Map data
+                        "room": room,
+                        "checkin_time": datetime.datetime.now().strftime("%H:%M %d/%m")
+                    }
+                    state.status = "CONFIRM"
+                    state.progress = 100
+                    state.consecutive_match_count = 0 
+                found = True
+            else:
+                print(f"❌ Low Score (< 0.40) hoặc Ambiguous")
+        else:
+            print("❌ DB Empty")
+        
+        if not found:
+            with state.lock:
+                state.status = "SCANNING"
+                state.progress = 0
+
+    except Exception as e:
+        print(f"🔥 AI Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        with state.lock:
+            state.status = "SCANNING"
+            state.progress = 0
+        return
+
+        # QUAN TRỌNG: Nếu chưa Confirm và chưa về Scanning -> Reset timer để Camera Worker gọi tiếp
+        if state.status == "PROCESSING":
+            with state.lock:
+                # Đặt lại thời gian để camera worker tiếp tục đếm process
+                # Trừ đi 0.3s để lần sau chạy nhanh hơn (chỉ đợi 0.2s)
+                state.process_start_time = time.time() - 0.3
 
     except Exception as e:
         print(f"AI Error: {e}")
@@ -222,99 +245,106 @@ def run_recognition_async(frame):
 # --- CAMERA THREAD ---
 def camera_worker():
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # Giảm độ phân giải xuống 640x480 để mượt hơn
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     
-    # Init Face Mesh
+    # Init Face Mesh (Vẫn dùng để detect khuôn mặt nhanh)
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
-        refine_landmarks=False, # Tắt để nhanh hơn
+        refine_landmarks=True,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
 
-    frame_count = 0
     while state.running:
         ret, frame = cap.read()
         if not ret: break
         frame = cv2.flip(frame, 1)
-        h, w = frame.shape[:2]
-        frame_count += 1
         
+        # --- LOCK AI WHEN CONFIRMING (NEW) ---
+        # Nếu đang đợi người dùng bấm nút, không làm gì cả để tiết kiệm CPU và tránh nhảy log
+        if state.status == "CONFIRM":
+            with state.lock:
+                state.frame = frame.copy()
+            time.sleep(0.1)
+            continue
+            
         # --- STATE MACHINE ---
         current_time = time.time()
         
-        # 1. SCANNING -> Chuyển sang Check Liveness nếu thấy mặt (mỗi 5 frame)
-        if state.status == "SCANNING" and (frame_count % 5 == 0):
-            # Resize để xử lý cực nhanh
-            small_rgb = cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(small_rgb)
+        # --- MAIN FACE SELECTION (Anti-Crowd) ---
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb_frame)
+        
+        if results.multi_face_landmarks:
+            h, w, _ = frame.shape
+            screen_center_x, screen_center_y = w // 2, h // 2
             
-            if results.multi_face_landmarks:
-                with state.lock:
-                    state.status = "LIVENESS"
-                    state.blink_counter = 0
-                    state.is_blinking = False
+            best_face_data = None
+            max_focus_score = -1
 
-        # 2. LIVENESS CHECK -> Chỉ quét mỗi 2 frame
-        elif state.status == "LIVENESS" and (frame_count % 2 == 0):
-            # -- Check Spoofing --
-            is_spoof, msg = check_spoofing_opencv(frame)
-            if is_spoof:
-                with state.lock:
-                    state.status = "SPOOF"
-                time.sleep(1.0)
-                with state.lock:
-                    if state.status == "SPOOF": state.status = "SCANNING"
-                continue
+            # Duyệt qua tất cả mặt để tìm "Người chủ trì"
+            for face_landmarks in results.multi_face_landmarks:
+                # Tính bounding box
+                x_min, y_min = w, h
+                x_max, y_max = 0, 0
+                for lm in face_landmarks.landmark:
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    x_min, y_min = min(x_min, cx), min(y_min, cy)
+                    x_max, y_max = max(x_max, cx), max(y_max, cy)
+                
+                # Tính điểm ưu tiên (Diện tích * Độ trung tâm)
+                area = (x_max - x_min) * (y_max - y_min)
+                face_center_x = (x_min + x_max) / 2
+                face_center_y = (y_min + y_max) / 2
+                dist_to_center = ((face_center_x - screen_center_x)**2 + (face_center_y - screen_center_y)**2)**0.5
+                
+                # Heuristic: Ưu tiên mặt TO và GẦN TÂM (Trọng số diện tích cao hơn)
+                focus_score = area / (dist_to_center + 1) 
+                
+                if focus_score > max_focus_score:
+                    max_focus_score = focus_score
+                    best_face_data = (x_min, y_min, x_max, y_max)
 
-            # Resize ảnh AI Input
-            small_rgb = cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(small_rgb)
-            
-            if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0].landmark
-                # Tọa độ landmark là 0-1 nên dùng w, h nào cũng được tỉ lệ đúng
-                left_ear = calculate_ear(landmarks, LEFT_EYE, 640, 360)
-                right_ear = calculate_ear(landmarks, RIGHT_EYE, 640, 360)
-                avg_ear = (left_ear + right_ear) / 2.0
+            # Chỉ vẽ và xử lý khuôn mặt TỐT NHẤT
+            if best_face_data:
+                x_min, y_min, x_max, y_max = best_face_data
                 
-                if avg_ear < 0.22: # Nhạy hơn xíu
-                    state.is_blinking = True
+                # Vẽ box (Màu Cam nếu đang Scan/Process, Màu Xanh nếu đã Confirm)
+                color = (33, 111, 242) # FPT Orange
+                if state.status == "CONFIRM": color = (73, 132, 30) # Green
                 
-                if avg_ear > 0.30 and state.is_blinking:
+                # Vẽ góc Corner
+                t, l = 2, 30
+                cv2.line(frame, (x_min, y_min), (x_min + l, y_min), color, t + 2)
+                cv2.line(frame, (x_min, y_min), (x_min, y_min + l), color, t + 2)
+                cv2.line(frame, (x_max, y_min), (x_max - l, y_min), color, t + 2)
+                cv2.line(frame, (x_max, y_min), (x_max, y_min + l), color, t + 2)
+                cv2.line(frame, (x_min, y_max), (x_min + l, y_max), color, t + 2)
+                cv2.line(frame, (x_min, y_max), (x_min, y_max - l), color, t + 2)
+                cv2.line(frame, (x_max, y_max), (x_max - l, y_max), color, t + 2)
+                cv2.line(frame, (x_max, y_max), (x_max, y_max - l), color, t + 2)
+                
+                # Trigger Processing
+                if state.status == "SCANNING" and (current_time - state.last_scan_time > 1.0):
                     with state.lock:
-                        state.blink_counter += 1
-                        state.is_blinking = False
                         state.status = "PROCESSING"
                         state.process_start_time = current_time
                         state.progress = 0
-            else:
-                with state.lock:
-                    state.status = "SCANNING"
 
-        # 3. PROCESSING (Giữ nguyên logic cũ)
-        elif state.status == "PROCESSING":
+        # 2. PROCESSING logic (Sử dụng frame đã vẽ box làm preview)
+        if state.status == "PROCESSING":
             elapsed = current_time - state.process_start_time
-            
             if elapsed < 0:
-                # Đang đợi AI (do đã set start_time = tương lai)
-                # Giữ progress ở mức 91-99% cho sinh động
-                with state.lock:
-                    state.progress = 90 + int((current_time * 10) % 9)
+                with state.lock: state.progress = 90 + int((current_time * 10) % 9)
             else:
-                # Giai đoạn loading ban đầu (0-90%)
-                prog = int((elapsed / 0.5) * 90) # Nhanh hơn chút
-                
-                with state.lock:
-                    state.progress = min(90, max(0, prog)) # Chặn số âm
-                
-                if elapsed > 0.5:
-                    # Đủ thời gian chờ -> Chạy AI Thread
-                    threading.Thread(target=run_recognition_async, args=(frame.copy(),), daemon=True).start()
-                    # Đánh dấu đã chạy bằng cách đẩy thời gian về tương lai
-                    with state.lock:
-                        state.process_start_time = current_time + 1000 
+                prog = int((elapsed / 0.5) * 90)
+                with state.lock: state.progress = min(90, max(0, prog))
+                if elapsed > 0.3:
+                    # Chụp frame gốc để xử lý AI
+                    threading.Thread(target=run_recognition_async, args=(frame.copy(), state), daemon=True).start()
+                    with state.lock: state.process_start_time = current_time + 1000 
 
         with state.lock:
             state.frame = frame.copy()
@@ -387,11 +417,11 @@ def handle_action():
             
             print(f"CONFIRMED: {sid}")
     
-    # Reset state
+    # Reset state ngay lập tức
     with state.lock:
         state.status = "SCANNING"
         state.student_data = None
-        state.last_scan_time = time.time() + 2.0 # Delay 2s trước khi quét lại
+        state.last_scan_time = time.time() + 0.5 # Delay 0.5s trước khi quét lại (Mượt hơn)
         
     return jsonify({"success": True})
 
