@@ -107,29 +107,29 @@ def check_img_quality(frame):
     
     return True, "OK"
 
-def check_spoofing_opencv(frame, face_area=None):
+def check_spoofing_opencv(frame):
     """
-    Check giả mạo đơn giản dựa trên viền thiết bị và độ lóa
+    Check giả mạo - Tối ưu hiệu năng bằng cách resize
     """
     try:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        small_frame = cv2.resize(frame, (640, 360))
+        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
         
-        # 1. Phát hiện viền hình chữ nhật (Khung điện thoại/iPad)
-        edges = cv2.Canny(gray, 50, 150)
+        # 1. Phát hiện viền hình chữ nhật
+        edges = cv2.Canny(gray, 100, 200)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         for cnt in contours:
-            approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
+            approx = cv2.approxPolyDP(cnt, 0.05 * cv2.arcLength(cnt, True), True)
             if len(approx) == 4:
                 area = cv2.contourArea(cnt)
-                # Nếu có khung chữ nhật lớn bao quanh -> Nghi vấn màn hình
-                if area > 20000: 
+                if area > 5000: 
                     return True, "Phát hiện khung thiết bị"
 
-        # 2. Check độ lóa (Màn hình thường lóa cục bộ)
+        # 2. Check độ lóa
         _, max_val, _, _ = cv2.minMaxLoc(gray)
-        if max_val >= 253: # Ngưỡng lóa cao (253-255)
-            return True, "Ánh sáng quá chói (Màn hình)"
+        if max_val >= 253:
+            return True, "Ánh sáng quá chói"
             
         return False, "Real"
     except:
@@ -151,7 +151,7 @@ def run_recognition_async(frame):
                 align=True
             )
         except:
-             # Fallback nếu SSD lỗi hoặc không tìm thấy mặt
+             # Fallback nếu lỗi hoặc không tìm thấy mặt
              with state.lock:
                 state.status = "SCANNING"
                 state.progress = 0
@@ -160,6 +160,8 @@ def run_recognition_async(frame):
         found = False
         if results:
             target_embedding = results[0]["embedding"]
+            search_res = state.db.search_face(target_embedding)
+            
             # Hạ ngưỡng xuống 0.55 (Dễ nhận diện hơn)
             # An toàn nhờ cơ chế Double Check 3 lần
             if search_res and search_res[0].score > 0.55:
@@ -203,14 +205,13 @@ def run_recognition_async(frame):
 
         if not found:
             # Không nhận ra ai hoặc đang verify
-            # Nếu đang verify thì không reset status về SCANNING vội (để nó tiếp tục processing)
             if state.consecutive_match_count > 0:
-                 pass # Giữ yên để camera worker tiếp tục gọi run_recognition_async
+                 pass 
             else:
                 with state.lock:
                     state.status = "SCANNING"
                     state.progress = 0
-                    state.last_scan_time = time.time() + 1.0 # Delay nhẹ
+                    state.last_scan_time = time.time() + 1.0 
 
     except Exception as e:
         print(f"AI Error: {e}")
@@ -224,38 +225,40 @@ def camera_worker():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
-    # Init Face Mesh cho Blink Detection
+    # Init Face Mesh
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
-        refine_landmarks=True,
+        refine_landmarks=False, # Tắt để nhanh hơn
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
 
+    frame_count = 0
     while state.running:
         ret, frame = cap.read()
         if not ret: break
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
+        frame_count += 1
         
         # --- STATE MACHINE ---
         current_time = time.time()
         
-        # 1. SCANNING -> Chuyển sang Check Liveness nếu thấy mặt
-        if state.status == "SCANNING" and (current_time - state.last_scan_time > 1.0):
-            # Dùng FaceMesh để detect luôn cho nhẹ
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb_frame)
+        # 1. SCANNING -> Chuyển sang Check Liveness nếu thấy mặt (mỗi 5 frame)
+        if state.status == "SCANNING" and (frame_count % 5 == 0):
+            # Resize để xử lý cực nhanh
+            small_rgb = cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(small_rgb)
             
             if results.multi_face_landmarks:
                 with state.lock:
-                    state.status = "LIVENESS" # Trạng thái chờ chớp mắt
+                    state.status = "LIVENESS"
                     state.blink_counter = 0
                     state.is_blinking = False
 
-        # 2. LIVENESS CHECK (Chớp mắt + Check Màn hình)
-        elif state.status == "LIVENESS":
-            # -- Check Spoofing (Màn hình) trước --
+        # 2. LIVENESS CHECK -> Chỉ quét mỗi 2 frame
+        elif state.status == "LIVENESS" and (frame_count % 2 == 0):
+            # -- Check Spoofing --
             is_spoof, msg = check_spoofing_opencv(frame)
             if is_spoof:
                 with state.lock:
@@ -264,36 +267,29 @@ def camera_worker():
                 with state.lock:
                     if state.status == "SPOOF": state.status = "SCANNING"
                 continue
-            # -------------------------------------
 
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb_frame)
+            # Resize ảnh AI Input
+            small_rgb = cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(small_rgb)
             
             if results.multi_face_landmarks:
                 landmarks = results.multi_face_landmarks[0].landmark
-                
-                # Tính EAR
-                left_ear = calculate_ear(landmarks, LEFT_EYE, w, h)
-                right_ear = calculate_ear(landmarks, RIGHT_EYE, w, h)
+                # Tọa độ landmark là 0-1 nên dùng w, h nào cũng được tỉ lệ đúng
+                left_ear = calculate_ear(landmarks, LEFT_EYE, 640, 360)
+                right_ear = calculate_ear(landmarks, RIGHT_EYE, 640, 360)
                 avg_ear = (left_ear + right_ear) / 2.0
                 
-                # Logic Blink
-                # Mắt nhắm (EAR < 0.25)
-                if avg_ear < 0.25:
+                if avg_ear < 0.22: # Nhạy hơn xíu
                     state.is_blinking = True
                 
-                # Mắt mở lại (EAR > 0.30) VÀ trước đó đã nhắm -> ĐÃ CHỚP
                 if avg_ear > 0.30 and state.is_blinking:
                     with state.lock:
                         state.blink_counter += 1
                         state.is_blinking = False
-                        
-                        # Chỉ cần chớp 1 lần là tin
                         state.status = "PROCESSING"
                         state.process_start_time = current_time
                         state.progress = 0
             else:
-                # Mất dấu mặt -> Quay lại Scan
                 with state.lock:
                     state.status = "SCANNING"
 
