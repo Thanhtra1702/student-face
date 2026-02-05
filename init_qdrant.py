@@ -24,7 +24,7 @@ def preprocess_frame(frame):
         lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         cl = clahe.apply(l)
         
         limg = cv2.merge((cl, a, b))
@@ -67,9 +67,10 @@ def init_qdrant():
         img_path = os.path.join(IMAGE_DIR, filename)
         
         try:
-            # 1. Đọc ảnh gốc
-            img = cv2.imread(img_path)
-            if img is None: continue
+            # 1. Đọc và tiền xử lý ảnh (Đồng bộ với app.py)
+            img_raw = cv2.imread(img_path)
+            if img_raw is None: continue
+            img = preprocess_frame(img_raw)
             
             # 2. Tạo các biến thể (Augmentation - Buff x8 để tăng độ chính xác)
             # Dùng cv2.convertScaleAbs cho Brightness/Contrast

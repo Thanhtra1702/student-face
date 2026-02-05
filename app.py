@@ -38,8 +38,9 @@ COLLECTION_NAME = "student_faces"
 class KioskState:
     def __init__(self):
         self.frame = None
+        self.clean_snapshot = None # Bản ảnh cực sạch để lưu DB
         self.lock = threading.Lock()
-        self.status = "SCANNING" # SCANNING, LIVENESS, PROCESSING, CONFIRM, SPOOF
+        self.status = "SCANNING"  # SCANNING, PROCESSING, CONFIRM, SUCCESS
         self.progress = 0
         self.student_data = None 
         self.last_scan_time = 0
@@ -49,10 +50,11 @@ class KioskState:
         # Liveness Blink State
         self.blink_counter = 0
         self.is_blinking = False
-        self.last_blink_time = 0  # Thời gian lần chớp trước (để chống video replay)
+        self.last_blink_time = 0  
         # Verification State
         self.consecutive_match_count = 0
         self.last_recognized_sid = None
+        self.is_near = False # Trạng thái khoảng cách mới
         
 state = KioskState()
 
@@ -92,50 +94,49 @@ def calculate_ear(landmarks, eye_indices, w, h):
 # --- AI ENHANCEMENT HELPERS ---
 def preprocess_frame(frame):
     """
-    Giữ nguyên frame gốc cho AI xử lý.
-    Các model hiện đại (ArcFace) hoạt động tốt nhất với dữ liệu gốc thay vì filter thủ công.
+    Sử dụng CLAHE để cân bằng độ tương phản, giúp AI nhận diện tốt hơn 
+    trong điều kiện ánh sáng yếu hoặc bị ngược sáng.
     """
-    return frame
-
-def check_img_quality(frame):
-    # Tắt check chất lượng quá gắt để tránh chặn nhầm trong môi trường tối
-    return True, "OK"
+    try:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        # Cân bằng sáng (CLAHE) - Mức 3.0 là tối ưu nhất cho HD
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    except:
+        return frame
 
 def check_spoofing_opencv(frame, face_area=None):
     return False, "Real"
 
-def run_recognition_async(frame, state):
-    """Chạy AI Nhận diện - Debug Mode (RGB + Low Threshold)"""
-    print(f"🚀 AI Start: Kích thước ảnh {frame.shape}")
+def run_recognition_async(face_crop, full_frame, state, x_min, y_min, x_max, y_max):
+    """Chạy AI Nhận diện - Sử dụng ảnh crop để xử lý nhưng dùng ảnh gốc để hiển thị"""
+    # face_crop lúc này đã là vùng được crop từ camera_worker (Zoomed face)
     try:
-        # DeepFace làm việc tốt chuẩn với RGB
-        input_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        input_frame = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
         
         # --- 1. DETECT & EXTRACT FACE ---
-        print("🔍 Đang Detect Face (Mediapipe)...")
         face_objs = DeepFace.extract_faces(
             img_path=input_frame,
             detector_backend="mediapipe",
-            enforce_detection=True,
+            enforce_detection=False, # Đã crop sẵn nên không cần gắt gao detection
             align=True,
             grayscale=False
         )
         
         if not face_objs:
-            print("⚠️ DeepFace không tìm thấy mặt")
             with state.lock:
                 state.status = "SCANNING"
                 state.progress = 0
             return
 
         current_face = face_objs[0]["face"]
-        print(f"✅ Face Detected. Shape: {current_face.shape}")
-
         if current_face.max() <= 1.0:
             current_face = (current_face * 255).astype(np.uint8)
 
         # --- 2. GET EMBEDDING ---
-        print("🧬 Đang tạo Embedding (ArcFace)...")
         results = DeepFace.represent(
             img_path=current_face,
             model_name="ArcFace",
@@ -145,7 +146,6 @@ def run_recognition_async(frame, state):
         )
         
         if not results: 
-            print("❌ Lỗi tạo Embedding")
             with state.lock:
                 state.status = "SCANNING"
                 state.progress = 0
@@ -154,7 +154,6 @@ def run_recognition_async(frame, state):
         embedding = results[0]["embedding"]
         
         # --- 3. SEARCH DATABASE ---
-        print("🔎 Đang Query Qdrant...")
         search_res = state.db.client.query_points(
             collection_name=COLLECTION_NAME,
             query=embedding,
@@ -162,56 +161,84 @@ def run_recognition_async(frame, state):
         ).points
         
         found = False
-        
         if search_res:
             best_match = search_res[0]
             score = best_match.score
-            print(f"🎯 Top 1: {best_match.payload['student_id']} - Score: {score:.4f}")
+            current_sid = best_match.payload['student_id']
+            print(f"🎯 Top 1: {current_sid} - Score: {score:.4f}")
             
             accepted_sid = None
+            # --- TRIPLE CHECK LOGIC (Tối ưu Tốc độ) ---
+            # 1. Ngưỡng điểm cơ bản (0.45 là mức cân bằng nhất)
+            is_passing_score = score > 0.45
             
-            # --- 4. MATCHING LOGIC (SMART GAP CHECK) ---
-            # Hạ xuống 0.40
-            if score > 0.40:
-                # Tìm đối thủ thực sự (người đầu tiên có ID khác)
-                competitor = None
-                for res in search_res[1:]:
-                    if res.payload['student_id'] != best_match.payload['student_id']:
-                        competitor = res
-                        break
-                
-                if competitor:
-                    gap = score - competitor.score
-                    print(f"   Gap vs Different Person ({competitor.payload['student_id']}: {competitor.score:.4f}): {gap:.4f}")
-                    
-                    # Nếu phân vân giữa 2 người khác nhau mà khoảng cách quá hẹp (< 0.02)
-                    if gap < 0.02 and score < 0.65:
-                         print(f"⚠️ Từ chối: Nhập nhằng giữa {best_match.payload['student_id']} và {competitor.payload['student_id']}")
-                    else:
-                        accepted_sid = best_match.payload['student_id']
-                else:
-                    # Không có đối thủ khác ID nào trong top -> Quá an toàn
-                    accepted_sid = best_match.payload['student_id']
+            # 2. Gap Check (Giảm xuống 0.02 vì đã có xác nhận 2 lần)
+            is_ambiguous = False
+            competitor_score = 0
+            for res in search_res[1:]:
+                if res.payload['student_id'] != current_sid:
+                    competitor_score = res.score
+                    break
+            
+            if competitor_score > 0:
+                gap = score - competitor_score
+                if gap < 0.02 and score < 0.65: 
+                    is_ambiguous = True
+                    print(f"⚠️ Nhập nhằng giữa {current_sid} và người khác (Gap: {gap:.4f})")
+            
+            if is_passing_score and not is_ambiguous:
+                accepted_sid = current_sid
             
             if accepted_sid:
-                print(f"✅ CHẤP NHẬN MATCH: {accepted_sid}")
-                
-                # Bỏ qua Consecutive check để test độ nhạy -> Confirm Lập Tức
-                name, sch, room = state.db.get_student_info(accepted_sid)
                 with state.lock:
-                    state.student_data = {
-                        "name": name,
-                        "student_id": accepted_sid,
-                        "schedule": sch, # Map data
-                        "room": room,
-                        "checkin_time": datetime.datetime.now().strftime("%H:%M %d/%m")
-                    }
-                    state.status = "CONFIRM"
-                    state.progress = 100
-                    state.consecutive_match_count = 0 
-                found = True
+                    if state.last_recognized_sid == accepted_sid:
+                        state.consecutive_match_count += 1
+                    else:
+                        state.last_recognized_sid = accepted_sid
+                        state.consecutive_match_count = 1
+                    
+                    print(f"🔄 Khớp lần {state.consecutive_match_count}/2 cho ID: {accepted_sid}")
+                    
+                    # --- FAST PATH: Nếu score > 0.65, xác nhận ngay lập tức ---
+                    is_very_sure = score > 0.65
+                    
+                    if state.consecutive_match_count >= 2 or is_very_sure:
+                        print(f"✅ XÁC NHẬN CHÍNH XÁC{' (FAST)' if is_very_sure else ''}: {accepted_sid}")
+                        name, sch, room = state.db.get_student_info(accepted_sid)
+                        state.student_data = {
+                            "name": name,
+                            "student_id": accepted_sid,
+                            "schedule": sch,
+                            "room": room,
+                            "checkin_time": datetime.datetime.now().strftime("%H:%M %d/%m")
+                        }
+                        # --- SMART SNAPSHOT: Lưu 2 bản (Bản đẹp hiển thị và Bản sạch lưu DB) ---
+                        # 1. Lưu bản sạch (Original HD)
+                        state.clean_snapshot = full_frame.copy()
+                        
+                        # 2. Vẽ khung xanh lên bản copy để hiển thị (thickness=3, length=40 cho HD)
+                        display_frame = full_frame.copy()
+                        t, l = 3, 40
+                        cv2.line(display_frame, (x_min, y_min), (x_min + l, y_min), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_min, y_min), (x_min, y_min + l), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_max, y_min), (x_max - l, y_min), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_max, y_min), (x_max, y_min + l), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_min, y_max), (x_min + l, y_max), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_min, y_max), (x_min, y_max - l), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_max, y_max), (x_max - l, y_max), (73, 132, 30), t)
+                        cv2.line(display_frame, (x_max, y_max), (x_max, y_max - l), (73, 132, 30), t)
+                        
+                        state.frame = display_frame
+                        state.status = "CONFIRM"
+                        state.progress = 100
+                        state.consecutive_match_count = 0 
+                        found = True
+                    else:
+                        state.status = "PROCESSING"
+                        state.progress = 95
+                        found = True
             else:
-                print(f"❌ Low Score (< 0.40) hoặc Ambiguous")
+                print(f"❌ Low Score (< 0.45) hoặc Ambiguous")
         else:
             print("❌ DB Empty")
         
@@ -222,34 +249,22 @@ def run_recognition_async(frame, state):
 
     except Exception as e:
         print(f"🔥 AI Exception: {e}")
-        import traceback
-        traceback.print_exc()
         with state.lock:
             state.status = "SCANNING"
             state.progress = 0
-        return
-
-        # QUAN TRỌNG: Nếu chưa Confirm và chưa về Scanning -> Reset timer để Camera Worker gọi tiếp
-        if state.status == "PROCESSING":
-            with state.lock:
-                # Đặt lại thời gian để camera worker tiếp tục đếm process
-                # Trừ đi 0.3s để lần sau chạy nhanh hơn (chỉ đợi 0.2s)
-                state.process_start_time = time.time() - 0.3
-
-    except Exception as e:
-        print(f"AI Error: {e}")
+    
+    if state.status == "PROCESSING":
         with state.lock:
-            state.status = "SCANNING"
-            state.progress = 0
+            state.process_start_time = time.time() - 0.4 
 
 # --- CAMERA THREAD ---
 def camera_worker():
     cap = cv2.VideoCapture(0)
-    # Giảm độ phân giải xuống 640x480 để mượt hơn
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    # Nâng cấp lên HD 720p
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
-    # Init Face Mesh (Vẫn dùng để detect khuôn mặt nhanh)
+    # Init Face Mesh
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
         refine_landmarks=True,
@@ -262,14 +277,9 @@ def camera_worker():
         if not ret: break
         frame = cv2.flip(frame, 1)
         
-        # --- LOCK AI WHEN CONFIRMING (NEW) ---
-        # Nếu đang đợi người dùng bấm nút, không làm gì cả để tiết kiệm CPU và tránh nhảy log
-        if state.status == "CONFIRM":
-            with state.lock:
-                state.frame = frame.copy()
-            time.sleep(0.1)
-            continue
-            
+        # --- NEW: Lưu lại frame sạch để làm snapshot ---
+        raw_frame = frame.copy()
+        
         # --- STATE MACHINE ---
         current_time = time.time()
         
@@ -300,7 +310,7 @@ def camera_worker():
                 face_center_y = (y_min + y_max) / 2
                 dist_to_center = ((face_center_x - screen_center_x)**2 + (face_center_y - screen_center_y)**2)**0.5
                 
-                # Heuristic: Ưu tiên mặt TO và GẦN TÂM (Trọng số diện tích cao hơn)
+                # Heuristic: Ưu tiên mặt TO và GẦN TÂM
                 focus_score = area / (dist_to_center + 1) 
                 
                 if focus_score > max_focus_score:
@@ -311,27 +321,49 @@ def camera_worker():
             if best_face_data:
                 x_min, y_min, x_max, y_max = best_face_data
                 
-                # Vẽ box (Màu Cam nếu đang Scan/Process, Màu Xanh nếu đã Confirm)
-                color = (33, 111, 242) # FPT Orange
-                if state.status == "CONFIRM": color = (73, 132, 30) # Green
+                # --- DISTANCE FILTER (720p Optimized) ---
+                face_width = x_max - x_min
+                is_near_enough = face_width > 180 # Mở rộng khoảng cách (~2m - 2.5m)
                 
-                # Vẽ góc Corner
-                t, l = 2, 30
-                cv2.line(frame, (x_min, y_min), (x_min + l, y_min), color, t + 2)
-                cv2.line(frame, (x_min, y_min), (x_min, y_min + l), color, t + 2)
-                cv2.line(frame, (x_max, y_min), (x_max - l, y_min), color, t + 2)
-                cv2.line(frame, (x_max, y_min), (x_max, y_min + l), color, t + 2)
-                cv2.line(frame, (x_min, y_max), (x_min + l, y_max), color, t + 2)
-                cv2.line(frame, (x_min, y_max), (x_min, y_max - l), color, t + 2)
-                cv2.line(frame, (x_max, y_max), (x_max - l, y_max), color, t + 2)
-                cv2.line(frame, (x_max, y_max), (x_max, y_max - l), color, t + 2)
+                with state.lock:
+                    state.is_near = is_near_enough
                 
-                # Trigger Processing
-                if state.status == "SCANNING" and (current_time - state.last_scan_time > 1.0):
-                    with state.lock:
-                        state.status = "PROCESSING"
-                        state.process_start_time = current_time
-                        state.progress = 0
+                # Vẽ box (HD Thickness)
+                color = (255, 255, 255) # White
+                if is_near_enough:
+                    color = (33, 111, 242) # FPT Orange
+                if state.status == "CONFIRM": 
+                    color = (73, 132, 30) # Green
+                
+                # Vẽ góc Corner HD (Dày hơn một chút để sắc nét)
+                t, l = 3, 40
+                cv2.line(frame, (x_min, y_min), (x_min + l, y_min), color, t)
+                cv2.line(frame, (x_min, y_min), (x_min, y_min + l), color, t)
+                cv2.line(frame, (x_max, y_min), (x_max - l, y_min), color, t)
+                cv2.line(frame, (x_max, y_min), (x_max, y_min + l), color, t)
+                cv2.line(frame, (x_min, y_max), (x_min + l, y_max), color, t)
+                cv2.line(frame, (x_min, y_max), (x_min, y_max - l), color, t)
+                cv2.line(frame, (x_max, y_max), (x_max - l, y_max), color, t)
+                cv2.line(frame, (x_max, y_max), (x_max, y_max - l), color, t)
+                
+                # Trigger Processing - CHỈ KHI ĐỦ GẦN
+                if is_near_enough and state.status == "SCANNING" and (current_time - state.last_scan_time > 1.0):
+                    # --- DIGITAL ZOOM (CROP FACE FOR AI) ---
+                    # Cắt vùng mặt có thêm 40% padding để AI dễ nhận diện hơn từ xa
+                    pad_w = int((x_max - x_min) * 0.4)
+                    pad_h = int((y_max - y_min) * 0.4)
+                    x1, y1 = max(0, x_min - pad_w), max(0, y_min - pad_h)
+                    x2, y2 = min(w, x_max + pad_w), min(h, y_max + pad_h)
+                    
+                    face_crop = frame[y1:y2, x1:x2].copy()
+                    
+                    if face_crop.size > 0:
+                        with state.lock:
+                            state.status = "PROCESSING"
+                            state.process_start_time = current_time
+                            state.progress = 0
+                            # Lưu face_crop để thread AI sử dụng
+                            state.pending_crop = face_crop
 
         # 2. PROCESSING logic (Sử dụng frame đã vẽ box làm preview)
         if state.status == "PROCESSING":
@@ -339,17 +371,33 @@ def camera_worker():
             if elapsed < 0:
                 with state.lock: state.progress = 90 + int((current_time * 10) % 9)
             else:
-                prog = int((elapsed / 0.5) * 90)
+                # Giảm thời gian chờ xuống 0.1s để cảm giác nhanh hơn
+                prog = int((elapsed / 0.2) * 90)
                 with state.lock: state.progress = min(90, max(0, prog))
-                if elapsed > 0.3:
-                    # Chụp frame gốc để xử lý AI
-                    threading.Thread(target=run_recognition_async, args=(frame.copy(), state), daemon=True).start()
-                    with state.lock: state.process_start_time = current_time + 1000 
+                if elapsed > 0.1:
+                    # Lấy vùng ảnh mặt đã crop từ state
+                    with state.lock:
+                        ai_input = getattr(state, 'pending_crop', None)
+                    
+                    if ai_input is not None:
+                        # Tiền xử lý (Cân bằng sáng)
+                        processed_ai_frame = preprocess_frame(ai_input.copy())
+                        # Truyền ảnh SẠCH (raw_frame) để vẽ khung xanh khi khóa frame
+                        threading.Thread(target=run_recognition_async, 
+                                       args=(processed_ai_frame, raw_frame.copy(), state, x_min, y_min, x_max, y_max), 
+                                       daemon=True).start()
+                        with state.lock: 
+                            state.process_start_time = current_time + 1000 
+                            state.pending_crop = None # Clear sau khi gửi
+                    else:
+                        with state.lock: state.status = "SCANNING"
 
-        with state.lock:
-            state.frame = frame.copy()
+        # --- UPDATE FRAME (Chỉ update nếu không ở trạng thái CONFIRM) ---
+        if state.status != "CONFIRM":
+            with state.lock:
+                state.frame = frame.copy()
         
-        time.sleep(0.01)
+        time.sleep(0.005) 
 
 # Start Thread
 t = threading.Thread(target=camera_worker, daemon=True)
@@ -378,11 +426,13 @@ def video_feed():
 
 @app.route('/api/status')
 def get_status():
-    return jsonify({
-        "status": state.status,
-        "progress": state.progress,
-        "data": state.student_data
-    })
+    with state.lock:
+        return jsonify({
+            "status": state.status,
+            "progress": state.progress,
+            "data": state.student_data,
+            "is_near": state.is_near
+        })
 
 @app.route('/api/action', methods=['POST'])
 def handle_action():
@@ -406,11 +456,12 @@ def handle_action():
                 filename = f"{int(time.time())}.jpg"
                 save_path = os.path.join(student_collect_dir, filename)
                 
-                # Lưu frame tại thời điểm xác nhận
+                # Lưu ảnh xác thực (Sử dụng bản clean_snapshot sạch)
                 with state.lock:
-                    if state.frame is not None:
-                        cv2.imwrite(save_path, state.frame)
-                        print(f"📸 Đã lưu ảnh tự học vào folder: {save_path}")
+                    target_image = state.clean_snapshot if state.clean_snapshot is not None else state.frame
+                    if target_image is not None:
+                        cv2.imwrite(save_path, target_image)
+                        print(f"📸 Đã lưu ảnh SẠCH vào folder tự học: {save_path}")
             except Exception as e:
                 print(f"⚠️ Lỗi lưu ảnh tự học: {e}")
             # ----------------------------------------

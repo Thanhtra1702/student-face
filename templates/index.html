@@ -20,6 +20,11 @@
             <div class="live-feed">
                 <img src="/video_feed" id="video-feed" alt="Camera Stream">
 
+                <!-- Notification Overlay (Phủ lên camera bằng CSS) -->
+                <div id="distance-alert" class="notification-overlay hidden">
+                    <span class="iconify" data-icon="mdi:human-greeting-proximity"></span>
+                    <span>Vui lòng tiến lại gần Kiosk</span>
+                </div>
                 <!-- No manual overlay, backend will draw tracking box -->
                 <!-- Đã xóa Live Badge tại đây -->
             </div>

@@ -19,6 +19,9 @@ const ui = {
     btnConfirm: document.getElementById('btn-confirm'),
     btnRetry: document.getElementById('btn-retry'),
 
+    // Notification
+    distanceAlert: document.getElementById('distance-alert'),
+
     // Clock
     clock: document.getElementById('clock'),
     date: document.getElementById('date')
@@ -96,6 +99,13 @@ function updateUI(data) {
     if (appState.status === status && status !== "SCANNING") return;
 
     appState.status = status;
+
+    // Handle Distance Alert
+    if (status === "SCANNING" && data.is_near === false) {
+        ui.distanceAlert.classList.remove('hidden');
+    } else {
+        ui.distanceAlert.classList.add('hidden');
+    }
 
     if (status === "SCANNING") {
         switchView('SCANNING');

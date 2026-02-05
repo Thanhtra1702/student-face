@@ -23,7 +23,7 @@ def preprocess_frame(frame):
         denoised = cv2.GaussianBlur(frame, (3, 3), 0)
         lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         cl = clahe.apply(l)
         limg = cv2.merge((cl, a, b))
         final = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
@@ -81,11 +81,13 @@ def process_collected_images():
         
         print(f"\n📸 Đang xử lý: {filename} (MSSV: {mssv})")
         
-        # 1. Đọc và Crop ảnh
-        img = cv2.imread(file_path)
-        if img is None:
+        # 1. Đọc và Tiền xử lý (Đồng bộ với app.py)
+        img_raw = cv2.imread(file_path)
+        if img_raw is None:
             print("❌ Lỗi đọc ảnh.")
             continue
+        
+        img = preprocess_frame(img_raw)
 
         try:
             # ... (Phần Detection giữ nguyên) ...
@@ -222,12 +224,21 @@ def process_collected_images():
             
             print(f"✅ Đã thêm 4 variants vào Qdrant cho {mssv}.")
 
-            # 3. Dọn dẹp: Xóa ảnh gốc sau khi đã xử lý xong (Tiết kiệm bộ nhớ)
+            # 3. Lưu trữ: Di chuyển ảnh vào thư mục processed thay vì xóa (để đối soát)
             try:
-                os.remove(file_path)
-                print(f"🗑️ Đã xóa file gốc: {filename}")
+                # Tạo cấu trúc thư mục MSSV bên trong processed
+                dest_dir = os.path.join(PROCESSED_DIR, mssv)
+                if not os.path.exists(dest_dir):
+                    os.makedirs(dest_dir)
+                
+                # Di chuyển file (thêm timestamp để tránh trùng tên nếu 1 MSSV có nhiều ảnh)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest_path = os.path.join(dest_dir, f"{timestamp}_{filename}")
+                
+                shutil.move(file_path, dest_path)
+                print(f"📦 Đã lưu trữ ảnh gốc vào: {dest_path}")
             except Exception as e:
-                print(f"⚠️ Không thể xóa file {filename}: {e}")
+                print(f"⚠️ Không thể lưu trữ file {filename}: {e}")
             
             # Xóa thư mục rỗng trong collected_faces nếu cần
             parent_dir = os.path.dirname(file_path)
