@@ -85,6 +85,8 @@ python app.py
 ```text
 📁 student_face/
 ├── 📄 app.py                     # Web Server & Core AI (HD Logic)
+├── 📄 kiosk_db.py                # Database Handler (Qdrant + SQLite)
+├── 📄 setup_database.py          # Script khởi tạo SQLite ban đầu
 ├── 📄 process_collected_faces.py # Xử lý ảnh tự học & Augmentation
 ├── 📄 init_qdrant.py             # Khởi tạo Vector DB
 ├── 📁 templates/                 # UI (HTML/CSS)
