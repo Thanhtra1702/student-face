@@ -8,7 +8,6 @@ from deepface import DeepFace
 from tqdm import tqdm
 
 # Cấu hình
-DB_PATH = "./qdrant_db"
 COLLECTION_NAME = "student_faces"
 IMAGE_DIR = "./database"
 MODEL_NAME = "ArcFace"
@@ -41,7 +40,7 @@ def rotate_image(image, angle):
 
 def init_qdrant():
     # Khởi tạo client Qdrant lưu trữ local
-    client = QdrantClient(path=DB_PATH)
+    client = QdrantClient(host="localhost", port=6333)
 
     # Tạo lại collection
     print(f"Đang tạo lại collection '{COLLECTION_NAME}' với model {MODEL_NAME}...")

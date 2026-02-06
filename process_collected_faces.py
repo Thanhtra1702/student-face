@@ -13,7 +13,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 COLLECTED_DIR = "collected_faces"
 PROCESSED_DIR = "collected_faces/processed"
 DATABASE_DIR = "database"
-DB_PATH = "./qdrant_db"
 COLLECTION_NAME = "student_faces"
 
 # --- AI ENHANCEMENT HELPERS (Đồng bộ với app.py và init_qdrant.py) ---
@@ -64,7 +63,7 @@ def process_collected_images():
     print(f"🔍 Tìm thấy {len(image_files)} ảnh cần xử lý...")
     
     # Init Qdrant Client một lần
-    client = QdrantClient(path=DB_PATH)
+    client = QdrantClient(host="localhost", port=6333)
 
     count_success = 0
     

@@ -1,15 +1,14 @@
 import sqlite3
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
-# from kiosk_config import QDRANT_PATH, SQLITE_DB, COLLECTION_NAME
-QDRANT_PATH = "./qdrant_db"
+# from kiosk_config import SQLITE_DB, COLLECTION_NAME
 SQLITE_DB = "student_info.db"
 COLLECTION_NAME = "student_faces"
 
 class DatabaseHandler:
     def __init__(self):
         # Init Qdrant
-        self.client = QdrantClient(path=QDRANT_PATH)
+        self.client = QdrantClient(host="localhost", port=6333)
         try:
             self.client.get_collection(COLLECTION_NAME)
         except:

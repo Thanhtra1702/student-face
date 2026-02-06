@@ -11,10 +11,12 @@ ENV/
 # Database files
 *.db
 *.db-journal
-qdrant_db/
+qdrant_data/
 
 # Image database
 database/
+collected_faces/
+database_backup/
 flipped_faces/
 
 # IDE
